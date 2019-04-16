@@ -549,7 +549,11 @@ public class Client {
       }
       return false;
     }
-    
+
+    private synchronized boolean shouldAuthenticateUsingDelegationTokens () throws IOException {
+      return UserGroupInformation.getCurrentUser().isFromDelegationToken();
+    }
+
     private synchronized AuthMethod setupSaslConnection(final InputStream in2, 
         final OutputStream out2) throws IOException {
       // Do not use Client.conf here! We must use ConnectionId.conf, since the
@@ -653,7 +657,7 @@ public class Client {
           final short MAX_BACKOFF = 5000;
           closeConnection();
           disposeSasl();
-          if (shouldAuthenticateOverKrb()) {
+          if (shouldAuthenticateOverKrb() || shouldAuthenticateUsingDelegationTokens()) {
             if (currRetries < maxRetries) {
               if(LOG.isDebugEnabled()) {
                 LOG.debug("Exception encountered while connecting to "
@@ -664,6 +668,8 @@ public class Client {
                 UserGroupInformation.getLoginUser().reloginFromKeytab();
               } else if (UserGroupInformation.isLoginTicketBased()) {
                 UserGroupInformation.getLoginUser().reloginFromTicketCache();
+              } else if (UserGroupInformation.getCurrentUser().isFromDelegationToken()) {
+                UserGroupInformation.getCurrentUser().reloginFromDelegationTokens();
               }
               // have granularity of milliseconds
               //we are sleeping with the Connection lock held but since this
@@ -1472,6 +1478,16 @@ public class Client {
 
       if (call.error != null) {
         if (call.error instanceof RemoteException) {
+          //We got a delegation token expired error and we want to retry to refresh it
+          //Since the delegation token's can be externally managed we want the fail
+          //call to be ignored and retried
+          Exception unwrapped = ((RemoteException)call.error).unwrapRemoteException(
+                  org.apache.hadoop.security.token.SecretManager.InvalidToken.class);
+          if(unwrapped instanceof org.apache.hadoop.security.token.SecretManager.InvalidToken &&
+                  UserGroupInformation.getCurrentUser().isFromDelegationToken()) {
+            UserGroupInformation.getCurrentUser().reloginFromDelegationTokens();
+            call.error = new RetriableException(unwrapped);
+          }
           call.error.fillInStackTrace();
           throw call.error;
         } else { // local exception

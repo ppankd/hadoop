@@ -151,6 +151,21 @@ public class UserGroupInformation {
       return null;
     }
 
+    private void addDelegationTokensToSubject() throws LoginException {
+      if (subject == null ) {
+        throw new LoginException("Null subject found");
+      }
+      try {
+        Credentials creds = DelegationTokenUtil.tokenFileToCreds(conf);
+        if (creds != null) {
+          subject.getPrivateCredentials().add(creds);
+        }
+      }catch (IOException e) {
+        throw new LoginException("Failed to load token file from " +
+                HADOOP_TOKEN_FILE_LOCATION);
+      }
+    }
+
     @Override
     public boolean commit() throws LoginException {
       if (LOG.isDebugEnabled()) {
@@ -203,6 +218,7 @@ public class UserGroupInformation {
           LOG.debug("User entry: \"" + userEntry.toString() + "\"" );
         }
 
+        addDelegationTokensToSubject();
         subject.getPrincipals().add(userEntry);
         return true;
       }
@@ -351,7 +367,8 @@ public class UserGroupInformation {
   private final User user;
   private final boolean isKeytab;
   private final boolean isKrbTkt;
-  
+  private final boolean isDelegationToken;
+
   private static String OS_LOGIN_MODULE_NAME;
   private static Class<? extends Principal> OS_PRINCIPAL_CLASS;
   
@@ -609,6 +626,7 @@ public class UserGroupInformation {
     this.user = subject.getPrincipals(User.class).iterator().next();
     this.isKeytab = !subject.getPrivateCredentials(KeyTab.class).isEmpty();
     this.isKrbTkt = !subject.getPrivateCredentials(KerberosTicket.class).isEmpty();
+    this.isDelegationToken = !subject.getPrivateCredentials(Credentials.class).isEmpty();
   }
   
   /**
@@ -818,6 +836,14 @@ public class UserGroupInformation {
             new File(fileLocation), conf);
         loginUser.addCredentials(cred);
       }
+
+      if (!loginUser.isDelegationToken) {
+        Credentials cred = DelegationTokenUtil.readDelegationTokens(conf);
+        if (cred != null ) {
+          loginUser.addCredentials(cred);
+        }
+      }
+
       loginUser.spawnAutoRenewalThreadForUserCreds();
     } catch (LoginException le) {
       LOG.debug("failure to login", le);
@@ -867,6 +893,40 @@ public class UserGroupInformation {
     long start = tgt.getStartTime().getTime();
     long end = tgt.getEndTime().getTime();
     return start + (long) ((end - start) * TICKET_RENEW_WINDOW);
+  }
+
+  /**
+   * Re-Login a user in from delegation tokens
+   * method assumes that login had happened already.
+   * The Subject field of this UserGroupInformation object is updated to have
+   * the new credentials.
+   * @throws IOException
+   * @throws IOException on a failure
+   */
+  @InterfaceAudience.Public
+  @InterfaceStability.Evolving
+  public synchronized void reloginFromDelegationTokens() throws IOException {
+
+    if (!isFromDelegationToken()) {
+      throw new IOException("User has not logged on using delegation token");
+    }
+
+    synchronized(UserGroupInformation.class){
+      Credentials cred = DelegationTokenUtil.readDelegationTokens(conf);
+      if (cred != null ) {
+        addCredentials(cred);
+      }
+
+      for (Token<? extends TokenIdentifier> token: cred.getAllTokens()) {
+        for ( Credentials currentCreds : subject.getPrivateCredentials(Credentials.class)) {
+          currentCreds.synchTokens(token);
+        }
+      }
+    }
+  }
+
+  public boolean isFromDelegationToken () {
+    return !isKeytab && !isKrbTkt && isDelegationToken;
   }
 
   /**Spawn a thread to do periodic renewals of kerberos credentials*/

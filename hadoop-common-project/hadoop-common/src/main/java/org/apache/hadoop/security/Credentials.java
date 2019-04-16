@@ -323,4 +323,13 @@ public class Credentials implements Writable {
       }
     }
   }
+
+  public void synchTokens(Token<? extends TokenIdentifier> token) {
+    for(Map.Entry<Text, Token<?>> entry: tokenMap.entrySet()){
+      if (entry.getValue().getKind().equals(token.getKind())){
+        Token<? extends TokenIdentifier> clone = new Token<>(token.getIdentifier(), token.getPassword(), token.getKind(), entry.getValue().getService());
+        tokenMap.put(entry.getKey(), clone);
+      }
+    }
+  }
 }
